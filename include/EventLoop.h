@@ -1,26 +1,30 @@
 #pragma once
 #include <sys/epoll.h>
 #include <vector>
+#include <string>      // 👈 就是缺了这位大哥！
+#include <functional>
+
+// 定义回调函数类型：参数是 (触发事件的 fd, 读到的完整字符串)
+using MessageCallback = std::function<void(int, const std::string&)>;
 
 class EventLoop {
 public:
     EventLoop();
     ~EventLoop();
 
-    // 禁用拷贝构造和赋值操作（资源独占）
+    // 禁用拷贝构造和赋值操作
     EventLoop(const EventLoop&) = delete;
     EventLoop& operator=(const EventLoop&) = delete;
 
-    // 将 fd 添加到 epoll 中监听指定的事件（比如 EPOLLIN 代表可读）
     void addFd(int fd, uint32_t events);
-    
-    // 从 epoll 中移除对某个 fd 的监听
     void delFd(int fd);
-    
-    // 开启核心的事件循环（死循环，不断等待事件发生）
-    void loop();
+    void loop(int listen_fd);
+
+    // 注册回调函数的接口 (刚才报错说找不到这个成员，其实是因为上面 string 报错导致的连锁反应)
+    void setMessageCallback(MessageCallback cb) { onMessage_ = cb; }
 
 private:
-    int epoll_fd_; // epoll 实例本身也是一个文件描述符
-    std::vector<struct epoll_event> active_events_; // 用来接收内核返回的“活跃事件”
+    int epoll_fd_;
+    std::vector<struct epoll_event> active_events_;
+    MessageCallback onMessage_; // 保存上层注册进来的业务函数
 };
