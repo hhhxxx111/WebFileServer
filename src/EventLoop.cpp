@@ -58,6 +58,18 @@ void EventLoop::delFd(int fd) {
     }
 }
 
+// 核心封装 3：修改监听事件
+void EventLoop::modifyFd(int fd, uint32_t events) {
+    struct epoll_event ev;
+    ev.events = events;
+    ev.data.fd = fd;
+
+    // EPOLL_CTL_MOD 表示修改
+    if (epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev) == -1) {
+        std::cerr << "Error: epoll_ctl mod failed for fd " << fd << std::endl;
+    }
+}
+
 // 核心引擎：死循环监听事件
 void EventLoop::loop(int listen_fd) {
     std::cout << "🔄 EventLoop is running, waiting for events..." << std::endl;
@@ -93,50 +105,49 @@ void EventLoop::loop(int listen_fd) {
                 }
             } 
             // 情况 2：如果是其他 fd，说明是已经连接的浏览器给我们发 HTTP 请求了
+            // 情况 2：已连接的浏览器有动静了
             else {
-                std::string request_data; 
-                bool client_closed = false;
+                uint32_t events = active_events_[i].events;
 
                 // ==========================================
-                // 第一部分：使用边缘触发(EPOLLET)死循环读取数据
+                // 场景 A：浏览器发来了数据 (EPOLLIN 可读事件)
                 // ==========================================
-                while (true) {
-                    char buffer[4096] = {0};
-                    ssize_t bytes_read = read(active_fd, buffer, sizeof(buffer) - 1);
+                if (events & EPOLLIN) {
+                    std::string request_data; 
+                    bool client_closed = false;
 
-                    if (bytes_read > 0) {
-                        request_data.append(buffer, bytes_read);
-                    } 
-                    else if (bytes_read == -1) {
-                        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                            break; // 读干净了，跳出循环
-                        } else {
-                            std::cerr << "[-] Read error on fd: " << active_fd << std::endl;
-                            client_closed = true;
-                            break;
+                    while (true) {
+                        char buffer[4096] = {0};
+                        ssize_t bytes_read = read(active_fd, buffer, sizeof(buffer) - 1);
+
+                        if (bytes_read > 0) {
+                            request_data.append(buffer, bytes_read);
+                        } else if (bytes_read == -1) {
+                            if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                            else { client_closed = true; break; }
+                        } else if (bytes_read == 0) {
+                            client_closed = true; break;
                         }
-                    } 
-                    else if (bytes_read == 0) {
-                        std::cout << "[-] Connection closed by client (fd: " << active_fd << ")" << std::endl;
-                        client_closed = true;
-                        break;
+                    }
+
+                    if (!client_closed && !request_data.empty()) {
+                        if (onMessage_) onMessage_(active_fd, request_data);
+                    }
+
+                    if (client_closed) {
+                        delFd(active_fd);
+                        close(active_fd);
                     }
                 }
 
                 // ==========================================
-                // 第二部分：数据读取完毕，呼叫上层业务去处理！
+                // 场景 B：内核发送缓冲区空出来了 (EPOLLOUT 可写事件)
                 // ==========================================
-                if (!client_closed && !request_data.empty()) {
-                    // 如果上层（HttpServer）注册了回调，就把 fd 和数据全扔给它
-                    if (onMessage_) {
-                        onMessage_(active_fd, request_data);
+                if (events & EPOLLOUT) {
+                    // 呼叫上层业务：缓冲区腾出空间了，刚才没发完的文件可以接着发了！
+                    if (onWrite_) {
+                        onWrite_(active_fd);
                     }
-                }
-
-                // 第三部分：清理工作 (保持不变)
-                if (client_closed) {
-                    delFd(active_fd);
-                    close(active_fd);
                 }
             }
         }
