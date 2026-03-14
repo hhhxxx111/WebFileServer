@@ -110,8 +110,11 @@ void HttpServer::handleMessage(int active_fd, const std::string& raw_data) {
                             // 【核心魔法】网卡缓冲区满了！不报错，记下进度，修改监听状态！
                             std::cout << "[*] 发送缓冲区满，保存进度，等待 EPOLLOUT... (fd: " << active_fd << ")" << std::endl;
                             
-                            // 1. 记账
-                            file_states_[active_fd] = {file_fd, offset, file_size};
+                            // 【修复】：加锁记账！保护临界区
+                            {
+                                std::lock_guard<std::mutex> lock(this->state_mutex_);
+                                this->file_states_[active_fd] = {file_fd, offset, file_size};
+                            }
                             
                             // 2. 告诉 epoll：以后这个 active_fd 只要有空位能写数据了，立刻叫醒我！
                             loop_.modifyFd(active_fd, EPOLLIN | EPOLLOUT | EPOLLET);
